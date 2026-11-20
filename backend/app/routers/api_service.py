@@ -9,6 +9,12 @@ from fastapi.responses import StreamingResponse
 
 from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult
 from app.services.api_service import ApiServiceService
+from app.services.cube_snapshot import (
+    cube_query_result,
+    cube_query_result_for,
+    cube_report_view,
+    cube_snapshot_by_version,
+)
 
 router = APIRouter(prefix="/api/api_service", tags=["数据服务"])
 
@@ -63,6 +69,39 @@ def export_entries(
     return StreamingResponse(
         iter([output.getvalue()]), media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="api_service.csv"'})
+
+
+@router.get("/cube/result")
+def get_cube_result(
+    version: str | None = Query(default=None, description="立方体快照版本；缺省取当前快照"),
+    dim_codes: list[str] | None = Query(default=None, description="按请求维度核对分组覆盖"),
+) -> dict:
+    """数据服务的立方体查询结果：实际分组、指标值及分组覆盖。"""
+    if dim_codes:
+        view = cube_report_view(dim_codes, version=version)
+        if version and view.get("snapshot_version") is None:
+            raise HTTPException(status_code=404, detail=f"立方体快照 {version} 不存在")
+        return view
+    if version:
+        snapshot = cube_snapshot_by_version(version)
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail=f"立方体快照 {version} 不存在")
+        return cube_query_result_for(snapshot)
+    return cube_query_result()
+
+
+@router.get("/{entry_id}/query")
+def query_entry(entry_id: int) -> dict:
+    """按服务接口配置返回查询数据；立方体数据集带分组覆盖与缺失维度。"""
+    entry = service.get_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"服务接口 {entry_id} 不存在或已归档")
+    dataset = str(entry.get("查询数据集") or "")
+    if dataset != "cube_api":
+        raise HTTPException(status_code=400, detail=f"服务接口 {entry_id} 的数据集 {dataset} 暂不支持在线查询")
+    result = cube_query_result()
+    result["entry"] = {"id": entry.get("id"), "接口编号": entry.get("接口编号"), "版本号": entry.get("版本号")}
+    return result
 
 
 @router.get("/{entry_id}", response_model=dict)

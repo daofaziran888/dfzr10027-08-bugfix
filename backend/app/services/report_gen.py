@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.cube_snapshot import cube_report_view
 from app.store import store
 
 MODULE = "report_gen"
@@ -49,6 +50,15 @@ class ReportGenService:
         entry["abnormal"] = False
         rows.append(entry)
         return entry, []
+
+    def cube_view(
+        self,
+        dim_codes: list[str] | None = None,
+        *,
+        version: str | None = None,
+    ) -> dict[str, Any]:
+        """报表取数口径：维度小计可用，但覆盖冲突时必须说明不能当作多维结果。"""
+        return cube_report_view(dim_codes, version=version)
 
     def run_action(self, entry_id: int, action: str) -> tuple[dict[str, Any] | None, str]:
         entry = store.find(MODULE, entry_id)

@@ -1,10 +1,16 @@
 """数据管道接口：触发跨模块计算并查询产物。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas import ActionResult
 from app.services.pipeline_orchestrator import (
+    cube_query_result,
+    cube_query_result_for,
+    cube_report_view,
+    cube_snapshot_by_version,
+    get_cube_build,
+    list_cube_builds,
     list_pipeline_results,
     run_all_pipelines,
     run_attribution_compare_pipeline,
@@ -51,7 +57,60 @@ def trigger_cube(
     dim_codes: list[str] | None = Query(default=None, description="维度编号列表"),
 ) -> ActionResult:
     result = run_cube_pipeline(dim_codes)
+    if result.get("status") in ("缺维", "已保留", "无有效维度"):
+        # 构建本身成功，但产物与请求维度不一致，调用方需要看到原因与缺失维度。
+        return ActionResult(ok=True, message=result.get("message", "立方体快照未完整覆盖请求维度"), entry=result)
     return ActionResult(ok=True, message="立方体构建管道已执行", entry=result)
+
+
+@router.get("/cube/result")
+def get_cube_query_result(
+    version: str | None = Query(default=None, description="快照版本；缺省返回当前已发布快照"),
+    dim_codes: list[str] | None = Query(default=None, description="按请求维度查看覆盖情况"),
+) -> dict[str, object]:
+    """数据服务查询入口：按实际分组返回立方体结果及分组覆盖。"""
+    if version:
+        snapshot = cube_snapshot_by_version(version)
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail=f"立方体快照 {version} 不存在")
+        if dim_codes:
+            return cube_report_view(dim_codes, version=version)
+        return cube_query_result_for(snapshot)
+    if dim_codes:
+        return cube_report_view(dim_codes)
+    return cube_query_result()
+
+
+@router.get("/cube/snapshot")
+def get_current_cube_snapshot() -> dict:
+    """当前立方体快照详情：只包含实际参与聚合的维度与分组。"""
+    snapshot = cube_snapshot_by_version()
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="尚无立方体快照，请先执行立方体构建")
+    return snapshot
+
+
+@router.get("/cube/snapshot/{version}")
+def get_cube_snapshot(version: str) -> dict:
+    snapshot = cube_snapshot_by_version(version)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail=f"立方体快照 {version} 不存在")
+    return snapshot
+
+
+@router.get("/cube/builds")
+def get_cube_builds() -> dict[str, object]:
+    """立方体构建记录：每次请求的维度、实际分组与覆盖情况。"""
+    items = list_cube_builds()
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/cube/builds/{build_id}")
+def get_cube_build_detail(build_id: int) -> dict:
+    build = get_cube_build(build_id)
+    if build is None:
+        raise HTTPException(status_code=404, detail=f"立方体构建记录 {build_id} 不存在")
+    return build
 
 
 @router.post("/cohort-extract", response_model=ActionResult)

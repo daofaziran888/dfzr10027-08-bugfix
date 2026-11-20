@@ -26,6 +26,36 @@
       <dl v-for="f in detailFields" :key="f"><dt>{{ f }}</dt><dd>{{ selectedNode[f] ?? '—' }}</dd></dl>
       <div style="grid-column:1/-1; margin-top:8px; display:flex; gap:6px;">
         <button v-for="action in actions" :key="action" class="btn" :data-testid="`action-${selectedNode.id}-${action}`" @click="runAction(action, selectedNode)">{{ action }}</button>
+        <button class="btn" type="button" :data-testid="`build-${selectedNode.id}`" @click="buildSnapshot(selectedNode)">构建快照</button>
+      </div>
+      <div v-if="selectedNode.snapshot" class="snapshot-panel" data-testid="snapshot-detail" style="grid-column:1/-1; margin-top:12px;">
+        <h4>立方体快照 {{ selectedNode.snapshot.snapshot_version || '—' }}</h4>
+        <p data-testid="snapshot-status">
+          状态：{{ selectedNode.snapshot.status || '—' }}
+          · 实际维度：{{ (selectedNode.snapshot.dimensions || []).join('、') || '无' }}
+          · 分组数：{{ selectedNode.snapshot.cell_count ?? 0 }}
+        </p>
+        <p v-if="selectedNode.snapshot.missing_dimensions?.length" class="error-text" data-testid="snapshot-missing">
+          缺失维度：{{ selectedNode.snapshot.missing_dimensions.join('、') }}（这些维度未参与聚合，不能当作完整多维结果）
+        </p>
+        <p v-if="selectedNode.snapshot.coverage" data-testid="snapshot-coverage">
+          请求维度：{{ (selectedNode.snapshot.requested_dimensions || []).join('、') || '—' }}
+          · 实际分组：{{ (selectedNode.snapshot.dimensions || []).join('、') || '无' }}
+          · 覆盖完整：{{ selectedNode.snapshot.coverage.complete ? '是' : '否' }}
+        </p>
+        <table v-if="selectedNode.snapshot.cells?.length" class="data-table" data-testid="snapshot-cells">
+          <thead>
+            <tr><th v-for="field in selectedNode.snapshot.dim_fields" :key="field">{{ field }}</th><th>订单数</th><th>gmv</th><th>uv</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="(cell, index) in selectedNode.snapshot.cells" :key="index">
+              <td v-for="field in selectedNode.snapshot.dim_fields" :key="field">{{ cell[field] ?? '—' }}</td>
+              <td>{{ cell['订单数'] }}</td>
+              <td>{{ cell['gmv'] }}</td>
+              <td>{{ cell['uv'] }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
     <div v-if="showCreate" class="modal-backdrop" data-testid="create-modal">
@@ -37,7 +67,7 @@
         </div>
       </form>
     </div>
-    <footer class="page-foot"><span>{{ graph.nodes.length }} 个节点</span></footer>
+    <footer class="page-foot"><span>{{ graph.nodes.length }} 个节点</span><span v-if="errorMessage" class="error-text">{{ errorMessage }}</span></footer>
   </section>
 </template>
 <script setup lang="ts">
@@ -65,13 +95,43 @@ function layout(nodes: any[]) {
   nodes.forEach((n,i) => { pos[n.id] = { x: 120 + (i % 5) * 150, y: 50 + Math.floor(i / 5) * 80 } })
   nodePos.value = pos
 }
-function selectNode(node: any) { selectedNode.value = selectedNode.value?.id === node.id ? null : node }
+function selectNode(node: any) {
+  if (selectedNode.value?.id === node.id) { selectedNode.value = null; return }
+  selectedNode.value = node
+  void selectBuiltNode(node.id)
+}
 function startDrag(e: MouseEvent, node: any) { dragNode = node; const onMove = (ev: MouseEvent) => { if(!dragNode) return; nodePos.value[node.id] = { x: ev.offsetX, y: ev.offsetY } }; const onUp = () => { dragNode = null; document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp) }; document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp) }
 async function reload() {
   try { const res = await request(ENDPOINT); const data = await res.json(); graph.nodes = data.nodes || []; graph.edges = data.edges || []; layout(graph.nodes) } catch(e) { errorMessage.value = '加载失败' }
 }
 async function runAction(action: string, node: any) {
-  try { await request(`${ENDPOINT}/${node.id}/actions`, { method: 'POST', body: JSON.stringify({ action }) }); await reload() } catch(e) { errorMessage.value = '操作失败' }
+  try {
+    const res = await request(`${ENDPOINT}/${node.id}/actions`, { method: 'POST', body: JSON.stringify({ action }) })
+    const payload = await res.json()
+    if (!res.ok || !payload.ok) throw new Error(payload.message || '操作失败')
+    errorMessage.value = action === '启动构建' ? (payload.message || '') : ''
+    await reload()
+    if (action === '启动构建') await selectBuiltNode(node.id)
+  } catch (e: any) { errorMessage.value = e.message }
+}
+async function selectBuiltNode(id: number) {
+  try {
+    const res = await request(`${ENDPOINT}/${id}`)
+    if (!res.ok) return
+    selectedNode.value = await res.json()
+  } catch (e) {
+    errorMessage.value = '快照详情读取失败'
+  }
+}
+async function buildSnapshot(node: any) {
+  try {
+    const res = await request(`${ENDPOINT}/${node.id}/build`, { method: 'POST' })
+    const payload = await res.json()
+    if (!res.ok || !payload.ok) throw new Error(payload.message || '构建失败')
+    errorMessage.value = payload.entry?.构建提示 || payload.message || ''
+    await reload()
+    await selectBuiltNode(node.id)
+  } catch (e: any) { errorMessage.value = e.message }
 }
 function openCreate() { createValues.value = {}; showCreate.value = true }
 async function submitCreate() {

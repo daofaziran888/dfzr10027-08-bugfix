@@ -53,6 +53,27 @@ def get_entry(entry_id: int) -> dict:
     return entry
 
 
+@router.get("/{entry_id}/snapshot")
+def get_snapshot(entry_id: int) -> dict:
+    """立方体快照详情：返回实际参与聚合的维度与分组，而不是请求维度。"""
+    entry = service.get_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"数据立方体 {entry_id} 不存在")
+    snapshot = service.snapshot_of(entry_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail=f"数据立方体 {entry_id} 尚无可用快照")
+    return snapshot
+
+
+@router.post("/{entry_id}/build")
+def build_entry(entry_id: int) -> ActionResult:
+    """按声明的维度组合重建快照；无效编号会在构建前被拦下并说明缺失维度。"""
+    entry, message = service.build_snapshot(entry_id)
+    if entry is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=entry)
+
+
 @router.post("")
 def create_entry(payload: EntryPayload) -> ActionResult:
     entry_or_none, missing = service.create_entry(payload.values)

@@ -3,6 +3,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.cube_snapshot import (
+    build_cube_snapshot,
+    cube_snapshot_by_version,
+    latest_cube_build,
+    normalize_dim_codes,
+    snapshot_from_build,
+    validate_dimensions,
+)
 from app.store import store
 
 MODULE = "cube_builder"
@@ -32,7 +40,60 @@ class CubeBuilderService:
         return {"nodes": nodes, "edges": edges}
 
     def get_entry(self, entry_id: int) -> dict[str, Any] | None:
-        return store.find(MODULE, entry_id)
+        entry = store.find(MODULE, entry_id)
+        if entry is None:
+            return None
+        return self._with_snapshot(entry)
+
+    def _with_snapshot(self, entry: dict[str, Any]) -> dict[str, Any]:
+        """详情与构建使用同一份快照，避免入口声明与详情分组对不上。"""
+        detail = dict(entry)
+        build = latest_cube_build(int(entry.get("id", 0)))
+        if build is not None:
+            detail["snapshot"] = snapshot_from_build(build)
+            detail["snapshot_build_id"] = build.get("build_id")
+            return detail
+        version = detail.get("snapshot_version")
+        if version:
+            snapshot = cube_snapshot_by_version(str(version))
+            if snapshot is not None:
+                detail["snapshot"] = snapshot
+        return detail
+
+    def build_snapshot(self, entry_id: int) -> tuple[dict[str, Any] | None, str]:
+        """校验立方体声明的维度并构建快照，供「启动构建」与构建入口复用。"""
+        entry = store.find(MODULE, entry_id)
+        if entry is None:
+            return None, f"数据立方体 {entry_id} 不存在或已归档"
+
+        requested = normalize_dim_codes(entry.get("维度列表"))
+        _valid, missing = validate_dimensions(requested)
+        outcome = build_cube_snapshot(requested, source_entry_id=entry_id)
+        result = outcome["result"]
+        build = outcome["build_record"]
+
+        entry["snapshot_version"] = build.get("snapshot_version")
+        entry["实际维度"] = build.get("actual_dimensions") or []
+        entry["缺失维度"] = build.get("missing_dimensions") or []
+        entry["分组覆盖"] = {
+            "complete": bool(build.get("complete")),
+            "status": build.get("status"),
+            "coverage": build.get("coverage") or {},
+        }
+        entry["构建记录"] = build.get("build_id")
+        entry["构建提示"] = build.get("message") or result.get("message")
+        # 只有声明维度全部参与聚合时才算构建正常；缺维或保留旧快照要能被发现。
+        entry["abnormal"] = bool(missing) or bool(build.get("retained"))
+        return self._with_snapshot(entry), str(entry["构建提示"] or "")
+
+    def snapshot_of(self, entry_id: int) -> dict[str, Any] | None:
+        entry = store.find(MODULE, entry_id)
+        if entry is None:
+            return None
+        build = latest_cube_build(int(entry.get("id", 0)))
+        if build is not None:
+            return snapshot_from_build(build)
+        return cube_snapshot_by_version(entry.get("snapshot_version"))
 
     def create_entry(self, values: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
         missing = [f for f in REQUIRED_FIELDS if not str(values.get(f) or "").strip()]
@@ -57,6 +118,10 @@ class CubeBuilderService:
         entry["status"] = target
         entry["pending"] = target != STATUS_ORDER[-1]
         entry["abnormal"] = action in NEGATIVE_ACTIONS
+        if action == "启动构建":
+            built, message = self.build_snapshot(entry_id)
+            if built is not None:
+                return built, message or f"数据立方体已{action}"
         return entry, f"数据立方体已{action}"
 
     def raw_data(self) -> tuple[list[dict], list[dict]]:

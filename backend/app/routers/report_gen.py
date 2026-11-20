@@ -65,6 +65,15 @@ def export_entries(
         headers={"Content-Disposition": 'attachment; filename="report_gen.csv"'})
 
 
+@router.get("/cube/result")
+def get_cube_result(
+    version: str | None = Query(default=None, description="立方体快照版本；缺省取当前快照"),
+    dim_codes: list[str] | None = Query(default=None, description="报表请求的维度组合"),
+) -> dict:
+    """报表取数：同时请求可用维度与退役维度时，标记覆盖冲突且不冒充完整结果。"""
+    return service.cube_view(dim_codes, version=version)
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
     """读取单条分析报表明细；不存在时给出可读的错误说明。"""

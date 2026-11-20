@@ -13,12 +13,20 @@ from typing import Any
 from app.fixtures import (
     ATTRIBUTION_TOUCHES,
     COHORT_USERS,
-    DATA_MART_ROWS,
-    DIMENSIONS,
     EXPERIMENT_RESULTS,
     METRIC_DEFS,
     QUALITY_CHECK_SAMPLES,
     TREND_POINTS,
+)
+from app.services.cube_snapshot import (
+    build_cube_snapshot,
+    cube_query_result,
+    cube_query_result_for,
+    cube_report_view,
+    cube_snapshot_by_version,
+    current_cube_snapshot,
+    get_cube_build,
+    list_cube_builds,
 )
 from app.store import store
 
@@ -172,51 +180,23 @@ def run_forecast_pipeline(horizon: int = 7) -> dict[str, Any]:
 # Pipeline 3: dim_registry -> cube_builder -> api_service
 # ---------------------------------------------------------------------------
 
-def run_cube_pipeline(dim_codes: list[str] | None = None) -> dict[str, Any]:
-    """按指定维度组合 fixtures 数据集市行，生成多维立方体快照与查询接口产物。"""
-    dims = DIMENSIONS
-    if dim_codes is None:
-        dim_codes = [d["维度编号"] for d in dims[:2]]
+def run_cube_pipeline(dim_codes: list[str] | str | None = None) -> dict[str, Any]:
+    """按指定维度组合数据集市行，生成多维立方体快照与查询接口产物。
 
-    # 映射维度编号到字段名
-    dim_field_map = {
-        "DIM-REGION": "region",
-        "DIM-CHANNEL": "channel",
-        "DIM-USER-TAG": "tag",
-        "DIM-PRODUCT": "category_id",
-    }
-    selected_fields = [dim_field_map.get(dc) for dc in dim_codes if dim_field_map.get(dc)]
+    维度编号先经过校验：未注册、已退役或没有可聚合字段的维度不会进入快照
+    声明，也不会被悄悄忽略后按全表聚合成“全量合计”。请求里没有任何有效
+    维度时保留上一份快照，不把全表合计当成可复算结果。
+    """
+    outcome = build_cube_snapshot(dim_codes)
+    result = outcome["result"]
 
-    rows = list(DATA_MART_ROWS)
-    # 按选定维度分组聚合
-    groups: dict[tuple, dict] = {}
-    for r in rows:
-        key = tuple(r.get(f) for f in selected_fields)
-        if key not in groups:
-            groups[key] = {f: r.get(f) for f in selected_fields}
-            groups[key]["订单数"] = 0
-            groups[key]["gmv"] = 0.0
-            groups[key]["uv"] = 0
-        groups[key]["订单数"] += _to_int(r.get("订单数"))
-        groups[key]["gmv"] += _to_float(r.get("gmv"))
-        groups[key]["uv"] += _to_int(r.get("uv"))
-
-    cells = []
-    for g in groups.values():
-        cells.append({k: round(v, 2) if isinstance(v, float) else v for k, v in g.items()})
-
-    result = {
-        "dimensions": dim_codes,
-        "dim_fields": selected_fields,
-        "cell_count": len(cells),
-        "cells": cells,
-    }
-
-    _write_result("cube_api", {
-        "source_modules": ["dim_registry", "cube_builder"],
-        "target_module": "api_service",
-        "payload": result,
-    })
+    # 保留旧快照时不写回数据服务，避免下游读到与请求维度对不上的全表合计。
+    if outcome["publish"] is not None:
+        _write_result("cube_api", {
+            "source_modules": ["dim_registry", "cube_builder"],
+            "target_module": "api_service",
+            "payload": outcome["publish"],
+        })
     return result
 
 

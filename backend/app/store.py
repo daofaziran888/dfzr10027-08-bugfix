@@ -11,10 +11,22 @@ from app.seed import SEED_ROWS
 
 class Store:
     def __init__(self) -> None:
-        self._tables: dict[str, list[dict[str, Any]]] = {
+        self._tables: dict[str, list[dict[str, Any]]] = {}
+        self.reset()
+
+    def reset(self) -> None:
+        """原地恢复种子数据。
+
+        各业务模块在导入时就绑定了 ``store`` 实例，这里必须保持同一个对象、
+        只重置内部表，否则重置后的写入会落到旧实例里。
+        """
+        self._tables = {
             name: [dict(row) for row in rows] for name, rows in SEED_ROWS.items()
         }
         self._tables.setdefault("_pipeline_results", [])
+        # 立方体快照与构建记录的生命周期跟随管道产物，重置时一并清空。
+        self._tables.setdefault("_cube_snapshots", [])
+        self._tables.setdefault("_cube_builds", [])
 
     def module_names(self) -> list[str]:
         return sorted(self._tables)
@@ -31,6 +43,9 @@ class Store:
     def overview(self) -> dict[str, object]:
         modules: list[dict[str, object]] = []
         for name in self.module_names():
+            # 下划线开头的是管道/快照等内部产物表，不算业务模块。
+            if name.startswith("_"):
+                continue
             rows = self.rows(name)
             modules.append({
                 "name": name,
@@ -51,6 +66,5 @@ store = Store()
 
 
 def reset_store() -> None:
-    """重新初始化全局 store，用于测试隔离。"""
-    global store
-    store = Store()
+    """重新恢复全局 store 的种子数据，用于测试隔离。"""
+    store.reset()
